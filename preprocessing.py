@@ -1,7 +1,8 @@
+import os
 import geopandas as gpd
 import fiona
 
-gpkg_path = "brpgewaspercelen_definitief_2025.gpkg" 
+gpkg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw", "brpgewaspercelen_definitief_2025.gpkg")
 
 # ── 1. List all layers ──────────────────────────────────────────────
 layers = fiona.listlayers(gpkg_path)

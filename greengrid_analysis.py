@@ -38,15 +38,15 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 # 0.  PATHS  (all relative to script location)
 # ─────────────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data", "raw")
 
-BRP_PATH        = os.path.join(BASE_DIR, "brpgewaspercelen_definitief_2025.gpkg")
-MUNI_PATH       = os.path.join(BASE_DIR, "BestuurlijkeGebieden_2025.gpkg")
-WIND_TIF        = os.path.join(BASE_DIR, "NLD_power-density_100m (1).tif")
-SOLAR_TIF       = os.path.join(BASE_DIR,
-                    "global-pv-potential-study-raster-data-layers-globalsolaratlas",
-                    "global-PV-potential-study--RASTER-DATA-LAYERS--GlobalSolarAtlas-info",
-                    "derived", "PVOUT_level1.tif")
-NATURA_PATH     = os.path.join(BASE_DIR, "natura2000.gpkg")
+BRP_PATH        = os.path.join(DATA_DIR, "brpgewaspercelen_definitief_2025.gpkg")
+MUNI_PATH       = os.path.join(DATA_DIR, "BestuurlijkeGebieden_2025.gpkg")
+WIND_TIF        = os.path.join(DATA_DIR, "NLD_wind-speed_100m.tif")
+SOLAR_TIF       = os.path.join(DATA_DIR,
+                    "Netherlands_GISdata_LTAy_AvgDailyTotals_GlobalSolarAtlas-v2_GEOTIFF",
+                    "PVOUT.tif")
+NATURA_PATH     = os.path.join(DATA_DIR, "natura2000.gpkg")
 OUTPUT_PATH     = os.path.join(BASE_DIR, "greengrid_scores.gpkg")
 
 TARGET_CRS      = "EPSG:28992"          # RD New – metric, Netherlands
