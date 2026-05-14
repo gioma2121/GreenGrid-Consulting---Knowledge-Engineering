@@ -1,14 +1,14 @@
 import geopandas as gpd
 import pandas as pd
 
-# Controlla i layer disponibili
+# List layers in the data
 import fiona
 print(fiona.listlayers("greengrid_full.gpkg"))
 
-# Carica il layer principale
+# Load the main layer
 muni = gpd.read_file("greengrid_full.gpkg", layer="municipalities")
 
-# Struttura e statistiche
+# Structure and statistics
 print(muni.shape)
 print(muni.dtypes)
 print(muni.describe())
@@ -19,14 +19,14 @@ print(muni.sort_values("hybrid_score", ascending=False)
          [["gemeente_naam","wind_score","solar_score","hybrid_score","conflict_flag"]]
          .head(10))
 
-# Top 10 conflict-FREE (i candidati reali)
+# Top 10 conflict-FREE (the real candidates)
 clean = muni[muni["conflict_flag"] == False]
 print(clean.sort_values("hybrid_score", ascending=False)
           [["gemeente_naam","wind_score","solar_score","hybrid_score","available_land_ha"]]
           .head(10))
 
-# Quanti conflitti?
-print(f"Conflitti: {muni['conflict_flag'].sum()} / {len(muni)}")
+# How much conflict?
+print(f"Conflict: {muni['conflict_flag'].sum()} / {len(muni)}")
 
 
 import matplotlib.pyplot as plt
@@ -57,8 +57,8 @@ fig, ax = plt.subplots(figsize=(10, 10))
 # Base: hybrid score
 muni.plot(column="hybrid_score", ax=ax, cmap="YlGn", legend=True, alpha=0.8)
 
-# Overlay: comuni conflittuali in rosso
-muni[muni["conflict_flag"]].boundary.plot(ax=ax, color="red", linewidth=1.2, label="Conflitto Natura 2000")
+# Overlay: conflicting municipalities in red
+muni[muni["conflict_flag"]].boundary.plot(ax=ax, color="red", linewidth=1.2, label="Conflict Natura 2000")
 
 ax.set_title("Hybrid Score + Natura 2000 Conflicts", fontsize=14)
 ax.axis("off")
@@ -66,16 +66,16 @@ plt.legend()
 plt.savefig("greengrid_conflicts_map.png", dpi=150)
 plt.show()
 
-# Parcelle disponibili
+# Available parcels
 parcels = gpd.read_file("greengrid_full.gpkg", layer="parcels_available")
 print(parcels.head())
 print(parcels["category"].value_counts())
 
 # Natura 2000
 natura = gpd.read_file("greengrid_full.gpkg", layer="natura2000")
-print(f"Aree protette: {len(natura)}")
+print(f"Protected areas: {len(natura)}")
 print(natura.columns.tolist())
 
-# Land use per comune
+# Land use per municipality
 crops = gpd.read_file("greengrid_full.gpkg", layer="crop_area_per_municipality")
 print(crops.groupby("category")["total_area_ha"].sum().sort_values(ascending=False))
