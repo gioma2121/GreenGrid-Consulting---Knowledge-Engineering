@@ -49,7 +49,7 @@ axes[2].set_title("Hybrid Score")
 axes[2].axis("off")
 
 plt.tight_layout()
-plt.savefig("greengrid_scores_map.png", dpi=150)
+plt.savefig("fig/greengrid_scores_map.png", dpi=150)
 plt.show()
 
 fig, ax = plt.subplots(figsize=(10, 10))
@@ -57,13 +57,22 @@ fig, ax = plt.subplots(figsize=(10, 10))
 # Base: hybrid score
 muni.plot(column="hybrid_score", ax=ax, cmap="YlGn", legend=True, alpha=0.8)
 
-# Overlay: conflicting municipalities in red
-muni[muni["conflict_flag"]].boundary.plot(ax=ax, color="red", linewidth=1.2, label="Conflict Natura 2000")
+# Conflict level colour mapping
+conflict_colors = {
+    "low":    "yellow",
+    "medium": "orange",
+    "high":   "red",
+}
 
-ax.set_title("Hybrid Score + Natura 2000 Conflicts", fontsize=14)
+for level, color in conflict_colors.items():
+    subset = muni[muni["conflict_level"] == level]
+    if not subset.empty:
+        subset.boundary.plot(ax=ax, color=color, linewidth=1.8, label=f"Conflict: {level}")
+
+ax.set_title("Hybrid Score + Natura 2000 Conflict Levels", fontsize=14)
 ax.axis("off")
-plt.legend()
-plt.savefig("greengrid_conflicts_map.png", dpi=150)
+ax.legend(loc="lower left")
+plt.savefig("fig/greengrid_conflicts_map.png", dpi=150)
 plt.show()
 
 # Available parcels

@@ -363,11 +363,21 @@ print("\n[6/7] Normalising scores …")
 muni["wind_score"]  = minmax_norm(muni["avg_wind_wpd"].fillna(0))
 muni["solar_score"] = minmax_norm(muni["avg_solar_pvout"].fillna(0))
 muni["hybrid_score"] = (muni["wind_score"] + muni["solar_score"]) / 2
-muni["conflict_flag"] = muni["natura2000_overlap_pct"] > 10.0
 
-print(f"  wind_score  range: [{muni['wind_score'].min():.3f}, {muni['wind_score'].max():.3f}]")
-print(f"  solar_score range: [{muni['solar_score'].min():.3f}, {muni['solar_score'].max():.3f}]")
-print(f"  conflict municipalities: {muni['conflict_flag'].sum()}")
+def classify_conflict(pct):
+    if pct <= 15:
+        return "none"
+    elif pct <= 40:
+        return "low"
+    elif pct <= 70:
+        return "medium"
+    else:
+        return "high"
+
+muni["conflict_level"] = muni["natura2000_overlap_pct"].apply(classify_conflict)
+muni["conflict_flag"] = muni["natura2000_overlap_pct"] > 15.0
+
+print(muni["conflict_level"].value_counts())
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -385,6 +395,7 @@ OUTPUT_COLS = [
     "solar_score",
     "hybrid_score",
     "conflict_flag",
+    "conflict_level",
     "geometry",
 ]
 
