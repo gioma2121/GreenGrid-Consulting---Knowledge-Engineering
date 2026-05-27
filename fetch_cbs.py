@@ -22,13 +22,39 @@ except ImportError:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GPKG_PATH = os.path.join(BASE_DIR, "greengrid_full.gpkg")
+CACHE_PATH = os.path.join(BASE_DIR, "data", "raw", "cbs_70072ned.csv")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 – Fetch full CBS table (no filter)
 # ─────────────────────────────────────────────────────────────────────────────
-print("[1/3] Fetching CBS data (no filter) ...")
-df = pd.DataFrame(cbsodata.get_data('70072ned'))
-print(f"  Retrieved {len(df)} rows")
+import time
+
+CACHE_PATH = os.path.join(BASE_DIR, "data", "raw", "cbs_70072ned.csv")
+
+print("[1/3] Fetching CBS data ...")
+if os.path.exists(CACHE_PATH):
+    print(f"  Loading from cache: {CACHE_PATH}")
+    df = pd.read_csv(CACHE_PATH)
+    print(f"  Loaded {len(df)} rows from cache")
+else:
+    df = None
+    for attempt in range(1, 6):
+        try:
+            print(f"  Attempt {attempt}/5 ...")
+            df = pd.DataFrame(cbsodata.get_data('70072ned'))
+            print(f"  Retrieved {len(df)} rows")
+            os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+            df.to_csv(CACHE_PATH, index=False)
+            print(f"  Cached to {CACHE_PATH}")
+            break
+        except Exception as e:
+            print(f"  Failed: {e}")
+            if attempt < 5:
+                print("  Waiting 10 seconds ...")
+                time.sleep(10)
+    if df is None:
+        print("  ERROR: All attempts failed. Try again later.")
+        exit()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 – Filter in pandas
@@ -78,32 +104,32 @@ for col in ["population", "pop_density_km2"]:
 
 muni = muni.merge(cbs_muni, on="gemeente_naam", how="left")
 
-unmatched = muni[muni["pop_density_km2"].isna()]["gemeente_naam"].tolist()
-print(f"  Directly matched: {len(muni) - len(unmatched)}")
-print(f"  Unmatched: {len(unmatched)}")
+# Manual mapping for known name differences
+manual_map = {
+    "Utrecht":       "Utrecht (gemeente)",
+    "Groningen":     "Groningen (gemeente)",
+    "'s-Gravenhage": "'s-Gravenhage (gemeente)",
+    "Laren":         "Laren (NH.)",
+    "Beek":          "Beek (L.)",
+    "Stein":         "Stein (L.)",
+    "Rijswijk":      "Rijswijk (ZH.)",
+    "Middelburg":    "Middelburg (Z.)",
+    "Bergen (L)":    "Bergen (L.)",
+    "Bergen (NH)":   "Bergen (NH.)",
+    "Hengelo (O)":   "Hengelo (O.)",
+}
 
-# Fuzzy match for remaining
-if unmatched:
-    print("\n  Fuzzy matching unmatched ...")
-    cbs_all_names = cbs[cbs["Perioden"] == most_recent]["RegioS"].str.strip().tolist()
-
-    for name in unmatched:
-        match, score, _ = process.extractOne(
-            name, cbs_all_names, scorer=fuzz.token_sort_ratio
-        )
-        if score >= 80:
-            print(f"    '{name}' → '{match}' (score: {score})")
-            cbs_row = cbs[
-                (cbs["Perioden"] == most_recent) &
-                (cbs["RegioS"].str.strip() == match)
-            ]
-            if not cbs_row.empty:
-                muni.loc[muni["gemeente_naam"] == name, "population"] = \
-                    cbs_row["TotaleBevolking_1"].values[0]
-                muni.loc[muni["gemeente_naam"] == name, "pop_density_km2"] = \
-                    cbs_row["Bevolkingsdichtheid_57"].values[0]
-        else:
-            print(f"    '{name}' → NO MATCH (best: '{match}', score: {score})")
+print("\n  Applying manual name mapping ...")
+for orig, cbs_name in manual_map.items():
+    cbs_row = cbs[cbs["RegioS"].str.strip() == cbs_name]
+    if not cbs_row.empty:
+        print(f"    '{orig}' → '{cbs_name}' ✓")
+        muni.loc[muni["gemeente_naam"] == orig, "population"] = \
+            cbs_row["TotaleBevolking_1"].values[0]
+        muni.loc[muni["gemeente_naam"] == orig, "pop_density_km2"] = \
+            cbs_row["Bevolkingsdichtheid_57"].values[0]
+    else:
+        print(f"    '{orig}' → '{cbs_name}' NOT FOUND IN CBS")
 
 # Final report
 still_unmatched = muni[muni["pop_density_km2"].isna()]["gemeente_naam"].tolist()
