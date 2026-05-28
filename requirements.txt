@@ -5,3 +5,9 @@ fiona
 rasterio
 rasterstats
 shapely
+dash-bootstrap-components
+dash
+neo4j
+py2neo
+python-dotenv
+dash-cytoscape
