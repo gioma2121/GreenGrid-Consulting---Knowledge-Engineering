@@ -1,23 +1,22 @@
 """
 Page 3 — Knowledge Graph
-=========================
 Interactive subgraph visualisation using Dash Cytoscape.
-Loads top-N municipalities from AuraDB + their direct connections.
-Click a node to inspect its properties in the side panel.
+Uses simple queries (no complex COLLECT) and gemeente_naam as node IDs.
 
 pip install dash-cytoscape
 """
 
-import os, sys
+import os, sys, logging
 import dash
 from dash import html, dcc, callback, Input, Output, State
 import dash_bootstrap_components as dbc
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+log = logging.getLogger(__name__)
 
 try:
     import dash_cytoscape as cyto
-    cyto.load_extra_layouts()   # enables "cose-bilkent" force layout
+    cyto.load_extra_layouts()
     _CYTO_OK = True
 except ImportError:
     _CYTO_OK = False
@@ -26,265 +25,320 @@ from neo4j import GraphDatabase
 
 dash.register_page(__name__, path="/kg", name="🕸️ Knowledge Graph", order=2)
 
-# ── Neo4j config ──────────────────────────────────────────────────────────────
 NEO4J_URI  = os.getenv("NEO4J_URI",  "neo4j+s://14361706.databases.neo4j.io")
 NEO4J_USER = os.getenv("NEO4J_USER", "14361706")
 NEO4J_PASS = os.getenv("NEO4J_PASS", "")
 
-CONFLICT_COLORS = {
-    "none":   "#2ecc71",
-    "low":    "#f1c40f",
-    "medium": "#e67e22",
-    "high":   "#e74c3c",
-}
-NODE_COLORS = {
-    "Municipality":   None,          # coloured by conflict level
-    "Natura2000Site": "#8e44ad",
-    "EnergyTechnology": "#2980b9",
-    "ConflictLevel":  "#7f8c8d",
-    "GridSegment":    "#1abc9c",
-}
-EDGE_COLORS = {
-    "OVERLAPS_WITH":        "#e74c3c",
-    "NEAR_TO":              "#3498db",
-    "ADJACENT_TO":          "#95a5a6",
-    "SUITABLE_FOR":         "#27ae60",
-    "NEAREST_GRID_SEGMENT": "#1abc9c",
-    "HAS_LEVEL":            "#7f8c8d",
-    "IS_ABOUT":             "#e74c3c",
-    "WITH_SITE":            "#8e44ad",
-}
+FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif"
+C_CONFLICT = {"none": "#2ecc71", "low": "#f1c40f", "medium": "#e67e22", "high": "#e74c3c"}
 
 
-# ── Cypher query: fetch a readable subgraph ───────────────────────────────────
-SUBGRAPH_QUERY = """
-// Top-N municipalities by hybrid score + their direct connections
-MATCH (m:Municipality)
-WITH m ORDER BY m.hybrid_score DESC LIMIT $limit
-
-// Neighbours
-OPTIONAL MATCH (m)-[r1:ADJACENT_TO|NEAR_TO]->(m2:Municipality)
-  WHERE m2.hybrid_score > 0.4
-OPTIONAL MATCH (n:Natura2000Site)-[r2:OVERLAPS_WITH]->(m)
-  WHERE r2.overlap_pct > 20
-OPTIONAL MATCH (m)-[r3:SUITABLE_FOR]->(e:EnergyTechnology)
-OPTIONAL MATCH (c:Conflict)-[r4:IS_ABOUT]->(m)
-OPTIONAL MATCH (c)-[r5:WITH_SITE]->(n2:Natura2000Site)
-OPTIONAL MATCH (c)-[r6:HAS_LEVEL]->(cl:ConflictLevel)
-
-WITH collect(DISTINCT m)  AS munis,
-     collect(DISTINCT m2) AS neighbours,
-     collect(DISTINCT n)  AS natura,
-     collect(DISTINCT n2) AS natura2,
-     collect(DISTINCT e)  AS techs,
-     collect(DISTINCT c)  AS conflicts,
-     collect(DISTINCT cl) AS levels,
-     collect(DISTINCT {start: id(m), end: id(m2), type: "ADJACENT_TO"})  AS e1,
-     collect(DISTINCT {start: id(m), end: id(m2), type: "NEAR_TO",
-                       dist: r1.distance_km})                             AS e2,
-     collect(DISTINCT {start: id(n), end: id(m),  type: "OVERLAPS_WITH",
-                       pct: r2.overlap_pct})                              AS e3,
-     collect(DISTINCT {start: id(m), end: id(e),  type: "SUITABLE_FOR",
-                       score: r3.score})                                  AS e4,
-     collect(DISTINCT {start: id(c), end: id(m),  type: "IS_ABOUT"})     AS e5,
-     collect(DISTINCT {start: id(c), end: id(n2), type: "WITH_SITE"})    AS e6,
-     collect(DISTINCT {start: id(c), end: id(cl), type: "HAS_LEVEL"})    AS e7
-
-RETURN munis, neighbours, natura, natura2, techs, conflicts, levels,
-       e1+e2+e3+e4+e5+e6+e7 AS edges
-"""
-
-
-def _load_subgraph(limit: int = 25) -> tuple[list, list]:
-    """Return (cytoscape_nodes, cytoscape_edges) from AuraDB."""
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+# ── Neo4j helpers ─────────────────────────────────────────────────────────────
+def _load_subgraph(limit: int = 25):
+    """
+    Load a subgraph using simple queries. Returns (nodes, edges) for Cytoscape.
+    Uses gemeente_naam / site_code as string IDs (avoids id() deprecation issues).
+    """
     nodes, edges = [], []
-    seen_nodes, seen_edges = set(), set()
+    if not NEO4J_PASS:
+        log.error("NEO4J_PASS not set")
+        return nodes, edges
 
-    def _add_node(nid, label, props, color=None):
-        if nid in seen_nodes:
-            return
-        seen_nodes.add(nid)
-        c_level = props.get("conflict_level", "none")
-        bg = (CONFLICT_COLORS.get(c_level, "#2ecc71")
-              if label == "Municipality" else color or "#bdc3c7")
-        nodes.append({"data": {
-            "id":    str(nid),
-            "label": props.get("gemeente_naam") or props.get("site_name") or
-                     props.get("name") or props.get("level") or str(nid),
-            "type":  label,
-            "color": bg,
-            **{k: (round(v, 3) if isinstance(v, float) else v)
-               for k, v in props.items() if k != "geometry"},
-        }})
-
-    def _add_edge(src, tgt, rel_type, extra=None):
-        key = (str(src), str(tgt), rel_type)
-        if key in seen_edges or src is None or tgt is None:
-            return
-        seen_edges.add(key)
-        edges.append({"data": {
-            "source": str(src), "target": str(tgt),
-            "label":  rel_type,
-            "color":  EDGE_COLORS.get(rel_type, "#95a5a6"),
-            **(extra or {}),
-        }})
-
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
     try:
         with driver.session() as session:
-            rec = session.run(SUBGRAPH_QUERY, limit=limit).single()
-            if not rec:
-                return [], []
 
-            for m in rec["munis"] + rec["neighbours"]:
-                if m: _add_node(m.id, "Municipality", dict(m))
-            for n in rec["natura"] + rec["natura2"]:
-                if n: _add_node(n.id, "Natura2000Site", dict(n), NODE_COLORS["Natura2000Site"])
-            for e in rec["techs"]:
-                if e: _add_node(e.id, "EnergyTechnology", dict(e), NODE_COLORS["EnergyTechnology"])
-            for c in rec["conflicts"]:
-                if c: _add_node(c.id, "Conflict", dict(c), "#c0392b")
-            for cl in rec["levels"]:
-                if cl: _add_node(cl.id, "ConflictLevel", dict(cl), NODE_COLORS["ConflictLevel"])
+            # 1. Top-N municipalities
+            res = session.run("""
+                MATCH (m:Municipality)
+                RETURN m.gemeente_naam      AS name,
+                       m.hybrid_score       AS hybrid,
+                       m.wind_score         AS wind,
+                       m.solar_score        AS solar,
+                       m.conflict_level     AS conflict,
+                       m.grid_distance_km   AS grid_km,
+                       m.available_land_ha  AS land_ha,
+                       m.pop_density_km2    AS pop_den
+                ORDER BY m.hybrid_score DESC
+                LIMIT $limit
+            """, limit=limit)
+            muni_names = []
+            for r in res:
+                name = r["name"]
+                muni_names.append(name)
+                nodes.append({"data": {
+                    "id":           name,
+                    "label":        name,
+                    "type":         "Municipality",
+                    "color":        C_CONFLICT.get(r["conflict"] or "none", "#2ecc71"),
+                    "hybrid_score": round(r["hybrid"] or 0, 3),
+                    "wind_score":   round(r["wind"]   or 0, 3),
+                    "solar_score":  round(r["solar"]  or 0, 3),
+                    "conflict_level":    r["conflict"] or "none",
+                    "grid_distance_km":  round(r["grid_km"] or 0, 2),
+                    "available_land_ha": round(r["land_ha"] or 0, 0),
+                }})
+            log.info("KG: loaded %d municipality nodes", len(muni_names))
 
-            for edge in rec["edges"]:
-                if edge and edge.get("start") and edge.get("end"):
-                    extra = {}
-                    if "dist"  in edge: extra["distance_km"] = edge["dist"]
-                    if "pct"   in edge: extra["overlap_pct"] = edge["pct"]
-                    if "score" in edge: extra["score"]       = edge["score"]
-                    _add_edge(edge["start"], edge["end"], edge["type"], extra)
+            if not muni_names:
+                return nodes, edges
+
+            # 2. ADJACENT_TO edges (between top municipalities only)
+            res = session.run("""
+                MATCH (a:Municipality)-[:ADJACENT_TO]->(b:Municipality)
+                WHERE a.gemeente_naam IN $names
+                  AND b.gemeente_naam IN $names
+                RETURN a.gemeente_naam AS a, b.gemeente_naam AS b
+                LIMIT 300
+            """, names=muni_names)
+            seen_adj = set()
+            for r in res:
+                key = tuple(sorted([r["a"], r["b"]]))
+                if key not in seen_adj:
+                    seen_adj.add(key)
+                    edges.append({"data": {
+                        "id":     f"adj_{r['a']}_{r['b']}",
+                        "source": r["a"], "target": r["b"],
+                        "label":  "adjacent", "color": "#bdc3c7",
+                    }})
+
+            # 3. Natura 2000 sites with significant overlap
+            res = session.run("""
+                MATCH (n:Natura2000Site)-[r:OVERLAPS_WITH]->(m:Municipality)
+                WHERE m.gemeente_naam IN $names
+                  AND r.overlap_pct > 25
+                RETURN n.site_code AS code, n.site_name AS site_name,
+                       m.gemeente_naam AS muni,
+                       round(r.overlap_pct, 1) AS pct
+                LIMIT 60
+            """, names=muni_names)
+            natura_seen = set()
+            for r in res:
+                code = r["code"] or "UNK"
+                nid  = f"n_{code}"
+                if nid not in natura_seen:
+                    natura_seen.add(nid)
+                    nodes.append({"data": {
+                        "id":    nid,
+                        "label": (r["site_name"] or code)[:18],
+                        "type":  "Natura2000Site",
+                        "color": "#8e44ad",
+                        "site_code": code,
+                        "site_name": r["site_name"] or code,
+                    }})
+                edges.append({"data": {
+                    "id":     f"ov_{code}_{r['muni']}",
+                    "source": nid, "target": r["muni"],
+                    "label":  f"{r['pct']}%", "color": "#e74c3c",
+                }})
+            log.info("KG: loaded %d Natura2000 nodes, %d overlap edges",
+                     len(natura_seen), len([e for e in edges if "ov_" in e["data"]["id"]]))
+
+            # 4. EnergyTechnology singletons
+            res = session.run("MATCH (e:EnergyTechnology) RETURN e.name AS name")
+            for r in res:
+                nodes.append({"data": {
+                    "id": f"tech_{r['name']}", "label": r["name"],
+                    "type": "EnergyTechnology", "color": "#2980b9",
+                }})
+
+            # 5. SUITABLE_FOR edges (top-10 municipalities only, score > 0.65)
+            res = session.run("""
+                MATCH (m:Municipality)-[r:SUITABLE_FOR]->(e:EnergyTechnology)
+                WHERE m.gemeente_naam IN $names AND r.score > 0.65
+                RETURN m.gemeente_naam AS muni, e.name AS tech,
+                       round(r.score, 3) AS score
+                LIMIT 80
+            """, names=muni_names[:15])
+            for r in res:
+                edges.append({"data": {
+                    "id":     f"sf_{r['muni']}_{r['tech']}",
+                    "source": r["muni"], "target": f"tech_{r['tech']}",
+                    "label":  str(r["score"]), "color": "#27ae60",
+                }})
+
+    except Exception as exc:
+        log.error("KG load failed: %s", exc)
     finally:
         driver.close()
 
+    log.info("KG: total %d nodes, %d edges", len(nodes), len(edges))
     return nodes, edges
 
 
-# ── Stylesheet ────────────────────────────────────────────────────────────────
-CY_STYLESHEET = [
+# ── Cytoscape stylesheet ──────────────────────────────────────────────────────
+STYLESHEET = [
     {"selector": "node", "style": {
         "label":            "data(label)",
         "background-color": "data(color)",
         "color":            "#fff",
-        "font-size":        "9px",
+        "font-size":        "10px",
         "text-valign":      "center",
         "text-halign":      "center",
-        "width":            "40px",
-        "height":           "40px",
-        "border-width":     "2px",
-        "border-color":     "rgba(0,0,0,0.15)",
+        "width":            "42px",
+        "height":           "42px",
+        "border-width":     "1.5px",
+        "border-color":     "rgba(255,255,255,0.3)",
         "text-wrap":        "wrap",
-        "text-max-width":   "55px",
+        "text-max-width":   "60px",
+        "font-family":      FONT,
     }},
-    {"selector": "node[type='Natura2000Site']",   "style": {"shape": "diamond",  "width": "30px", "height": "30px"}},
-    {"selector": "node[type='EnergyTechnology']", "style": {"shape": "hexagon",  "width": "34px", "height": "34px"}},
-    {"selector": "node[type='ConflictLevel']",    "style": {"shape": "round-rectangle", "width": "50px", "height": "22px"}},
-    {"selector": "node[type='Conflict']",         "style": {"shape": "star",     "width": "20px", "height": "20px", "background-color": "#c0392b"}},
-    {"selector": "node:selected", "style": {"border-width": "3px", "border-color": "#1a3c2e", "width": "50px", "height": "50px"}},
+    {"selector": "node[type='Natura2000Site']", "style": {
+        "shape": "diamond", "width": "32px", "height": "32px", "font-size": "8px",
+    }},
+    {"selector": "node[type='EnergyTechnology']", "style": {
+        "shape": "hexagon", "width": "36px", "height": "36px",
+    }},
+    {"selector": "node:selected", "style": {
+        "border-width": "3px", "border-color": "#1d1d1f",
+        "width": "52px", "height": "52px",
+    }},
     {"selector": "edge", "style": {
         "line-color":           "data(color)",
         "target-arrow-color":   "data(color)",
         "target-arrow-shape":   "triangle",
         "curve-style":          "bezier",
         "width":                1.5,
-        "opacity":              0.65,
-        "label":                "data(label)",
-        "font-size":            "7px",
+        "opacity":              0.6,
+        "font-size":            "8px",
+        "font-family":          FONT,
         "color":                "#555",
         "text-rotation":        "autorotate",
+    }},
+    {"selector": "edge[label='adjacent']", "style": {
+        "width": 1, "opacity": 0.3, "target-arrow-shape": "none",
     }},
 ]
 
 
-# ── Layout builder ────────────────────────────────────────────────────────────
+# ── Layout ────────────────────────────────────────────────────────────────────
 def layout(**kwargs):
     if not _CYTO_OK:
-        return html.Div([
-            dbc.Alert([
-                html.Strong("dash-cytoscape not installed. "),
-                "Run: ",
-                html.Code("pip install dash-cytoscape"),
-                " then restart the app.",
-            ], color="warning", style={"margin": "1rem"}),
-        ])
-
-    nodes, edges = _load_subgraph(limit=25)
+        return html.Div(
+            dbc.Alert([html.Strong("dash-cytoscape not installed. "),
+                       "Run: ", html.Code("pip install dash-cytoscape"),
+                       " then restart."], color="warning"),
+            style={"padding": "1rem"},
+        )
 
     return html.Div([
-        # Controls bar
+
+        # Top bar
         html.Div([
-            html.Span("🕸️ Knowledge Graph Explorer", style={
-                "fontWeight": "700", "fontSize": "0.95rem", "color": "#1a3c2e"
+            html.Span("Knowledge Graph Explorer", style={
+                "fontWeight": "600", "fontSize": "14px",
+                "color": "#1d1d1f", "fontFamily": FONT, "letterSpacing": "-0.01em",
             }),
             html.Div([
-                html.Label("Top N municipalities:", style={"fontSize": "0.82rem", "marginRight": "0.5rem"}),
+                html.Span("Top N:", style={"fontSize": "12px", "color": "#86868b",
+                                            "fontFamily": FONT, "marginRight": "8px"}),
                 html.Div(dcc.Slider(id="kg-limit", min=10, max=50, step=5, value=25,
-                           marks={10: "10", 25: "25", 50: "50"},
-                           tooltip={"placement": "top"}), style={"width": "180px"}),
+                             marks={10: "10", 25: "25", 50: "50"},
+                             tooltip={"placement": "top"}),
+                         style={"width": "160px"}),
                 html.Button("Reload", id="kg-reload", n_clicks=0, style={
-                    "marginLeft": "1rem", "padding": "0.3rem 0.8rem",
-                    "backgroundColor": "#1a3c2e", "color": "white",
-                    "border": "none", "borderRadius": "5px",
-                    "cursor": "pointer", "fontSize": "0.83rem",
+                    "marginLeft": "12px", "padding": "5px 14px",
+                    "backgroundColor": "#1d1d1f", "color": "white",
+                    "border": "none", "borderRadius": "20px",
+                    "fontSize": "12px", "fontWeight": "500",
+                    "cursor": "pointer", "fontFamily": FONT,
                 }),
-            ], style={"display": "flex", "alignItems": "center", "gap": "0.3rem"}),
+            ], style={"display": "flex", "alignItems": "center"}),
         ], style={
             "display": "flex", "justifyContent": "space-between", "alignItems": "center",
-            "backgroundColor": "white", "padding": "0.6rem 1rem",
-            "borderBottom": "1px solid #e9ecef",
+            "padding": "10px 20px", "backgroundColor": "white",
+            "borderBottom": "1px solid #f0f0f0",
         }),
 
-        # Main area: graph + side panel
+        # Graph + side panel
         html.Div([
-            # Graph
-            dcc.Loading(type="circle", color="#1a3c2e", children=[
+            # Loading + Cytoscape
+            html.Div([
+                dcc.Loading(type="dot", color="#1d1d1f", children=[
+                    html.Div(id="kg-loading-output"),
+                ]),
                 cyto.Cytoscape(
                     id="kg-graph",
-                    layout={"name": "cose-bilkent", "randomize": False,
-                            "idealEdgeLength": 120, "nodeRepulsion": 8000},
-                    style={"width": "100%", "height": "calc(100vh - 120px)"},
-                    elements=nodes + edges,
-                    stylesheet=CY_STYLESHEET,
-                    minZoom=0.3, maxZoom=3.0,
+                    layout={"name": "cose", "randomize": False,
+                            "idealEdgeLength": 100, "nodeRepulsion": 5000,
+                            "animate": False},
+                    style={"width": "100%", "height": "100%"},
+                    elements=[],   # loaded via callback on mount
+                    stylesheet=STYLESHEET,
+                    minZoom=0.2, maxZoom=3.5,
                 ),
-            ]),
+            ], style={"flex": "1", "position": "relative", "height": "100%"}),
 
-            # Side panel (shown on node click)
-            html.Div(id="kg-side-panel", style={
-                "width": "260px", "minWidth": "260px",
-                "backgroundColor": "white", "borderLeft": "1px solid #e9ecef",
-                "padding": "1rem", "overflowY": "auto",
-                "height": "calc(100vh - 120px)",
+            # Side panel
+            html.Div([
+                html.Div(id="kg-side-panel", children=[
+                    html.Div([
+                        html.Div("Click a node to", style={"fontSize": "12px", "color": "#86868b",
+                                                             "fontFamily": FONT}),
+                        html.Div("inspect it", style={"fontSize": "12px", "color": "#86868b",
+                                                       "fontFamily": FONT}),
+                    ], style={"marginTop": "30px", "textAlign": "center"}),
+                ]),
+            ], style={
+                "width": "240px", "minWidth": "240px",
+                "borderLeft": "1px solid #f0f0f0",
+                "backgroundColor": "white", "padding": "16px",
+                "overflowY": "auto",
             }),
-        ], style={"display": "flex", "flex": "1"}),
+        ], style={"display": "flex", "flex": "1", "minHeight": "0"}),
 
         # Legend
         html.Div([
-            html.Span("⬤ Municipality (by conflict)", style={"marginRight": "1rem", "fontSize": "0.75rem"}),
-            *[html.Span(f"⬤ {k}", style={"color": v, "marginRight": "0.75rem", "fontSize": "0.75rem"})
-              for k, v in CONFLICT_COLORS.items()],
-            html.Span("◆ Natura 2000", style={"color": NODE_COLORS["Natura2000Site"], "marginRight": "0.75rem", "fontSize": "0.75rem"}),
-            html.Span("⬡ Energy tech", style={"color": NODE_COLORS["EnergyTechnology"], "fontSize": "0.75rem"}),
+            *[html.Span([
+                html.Span("●", style={"color": c, "marginRight": "3px"}),
+                html.Span(lv, style={"marginRight": "14px", "color": "#555"}),
+            ], style={"fontSize": "11px", "fontFamily": FONT})
+              for lv, c in C_CONFLICT.items()],
+            html.Span("◆ Natura 2000", style={"fontSize": "11px", "color": "#8e44ad",
+                                               "marginRight": "14px", "fontFamily": FONT}),
+            html.Span("⬡ Energy tech", style={"fontSize": "11px", "color": "#2980b9",
+                                               "fontFamily": FONT}),
         ], style={
-            "backgroundColor": "white", "padding": "0.4rem 1rem",
-            "borderTop": "1px solid #e9ecef", "fontSize": "0.75rem",
+            "padding": "8px 20px", "backgroundColor": "white",
+            "borderTop": "1px solid #f0f0f0", "display": "flex", "alignItems": "center",
         }),
 
-    ], style={"display": "flex", "flexDirection": "column",
-              "height": "calc(100vh - 52px)", "overflow": "hidden"})
+        # Trigger initial load
+        dcc.Store(id="kg-init-trigger"),
+
+    ], style={
+        "display": "flex", "flexDirection": "column",
+        "height": "calc(100vh - 52px)", "overflow": "hidden",
+        "fontFamily": FONT, "backgroundColor": "#fafafa",
+    })
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 @callback(
-    Output("kg-graph", "elements"),
-    Input("kg-reload", "n_clicks"),
-    State("kg-limit",  "value"),
-    prevent_initial_call=True,
+    Output("kg-graph",          "elements"),
+    Output("kg-loading-output", "children"),
+    Input("kg-reload",  "n_clicks"),
+    State("kg-limit",   "value"),
 )
-def reload_graph(_, limit):
+def load_graph(n_clicks, limit):
     nodes, edges = _load_subgraph(limit=limit or 25)
-    return nodes + edges
+    if not nodes:
+        msg = html.Div("Could not load graph — check Neo4j credentials and connection.",
+                       style={"padding": "20px", "color": "#ff3b30",
+                              "fontSize": "13px", "fontFamily": FONT})
+        return [], msg
+    return nodes + edges, None
+
+
+# Trigger initial load on page open (n_clicks=0 fires once on mount)
+@callback(
+    Output("kg-reload", "n_clicks"),
+    Input("kg-init-trigger", "data"),
+    prevent_initial_call=False,
+)
+def trigger_initial_load(_):
+    return 1
 
 
 @callback(
@@ -294,33 +348,44 @@ def reload_graph(_, limit):
 )
 def show_node_detail(data):
     if not data:
-        return html.Span("Click a node to inspect it.", style={"color": "#6c757d", "fontSize": "0.85rem"})
+        return html.Span("Click a node to inspect it.",
+                         style={"fontSize": "12px", "color": "#86868b", "fontFamily": FONT})
 
+    skip = {"id", "label", "type", "color"}
+    color = data.get("color", "#ccc")
     node_type = data.get("type", "")
-    label     = data.get("label", "")
-    color     = data.get("color", "#ccc")
 
     rows = []
-    skip = {"id", "label", "type", "color"}
     for k, v in data.items():
         if k in skip or v is None:
             continue
-        rows.append(html.Tr([
-            html.Td(k.replace("_", " "), style={"fontSize": "0.75rem", "color": "#6c757d",
-                                                  "paddingRight": "0.5rem", "whiteSpace": "nowrap"}),
-            html.Td(str(v), style={"fontSize": "0.82rem", "fontWeight": "500"}),
-        ]))
+        rows.append(html.Div([
+            html.Span(k.replace("_", " "), style={
+                "fontSize": "10px", "color": "#86868b", "textTransform": "uppercase",
+                "letterSpacing": "0.06em", "display": "block", "fontFamily": FONT,
+                "marginBottom": "1px",
+            }),
+            html.Span(str(v), style={
+                "fontSize": "13px", "color": "#1d1d1f", "fontWeight": "500",
+                "fontFamily": FONT,
+            }),
+        ], style={"marginBottom": "10px"}))
 
     return html.Div([
         html.Div([
             html.Div(style={
-                "width": "12px", "height": "12px", "borderRadius": "50%",
-                "backgroundColor": color, "marginRight": "0.4rem", "flexShrink": "0",
+                "width": "10px", "height": "10px", "borderRadius": "50%",
+                "backgroundColor": color, "flexShrink": "0",
             }),
-            html.Span(node_type, style={"fontSize": "0.72rem", "color": "#6c757d", "textTransform": "uppercase"}),
-        ], style={"display": "flex", "alignItems": "center", "marginBottom": "0.25rem"}),
-
-        html.H6(label, style={"fontWeight": "700", "color": "#1a3c2e", "marginBottom": "0.75rem"}),
-
-        html.Table(html.Tbody(rows), style={"width": "100%", "borderCollapse": "collapse"}),
+            html.Span(node_type, style={
+                "fontSize": "10px", "color": "#86868b", "textTransform": "uppercase",
+                "letterSpacing": "0.08em", "fontFamily": FONT,
+            }),
+        ], style={"display": "flex", "alignItems": "center", "gap": "6px", "marginBottom": "6px"}),
+        html.Div(data.get("label", ""), style={
+            "fontSize": "15px", "fontWeight": "700", "color": "#1d1d1f",
+            "letterSpacing": "-0.02em", "fontFamily": FONT, "marginBottom": "14px",
+            "paddingBottom": "12px", "borderBottom": "1px solid #f0f0f0",
+        }),
+        *rows,
     ])

@@ -1,9 +1,6 @@
 """
 Page 1 — Siting Map
-====================
-Choropleth map of Dutch municipalities coloured by hybrid/wind/solar score.
-Left sidebar: constraint filters (synced to Analytics page via dcc.Store).
-Bottom panel: NL→Cypher chat backed by DeepSeek + AuraDB.
+Full-viewport layout: left sidebar (filters) + right column (map on top, chat pinned at bottom).
 """
 
 import json, os, sys
@@ -19,184 +16,188 @@ from backend.nl_cypher import ask
 
 dash.register_page(__name__, path="/", name="🗺️ Map", order=0)
 
-# ── Load geodata once at startup ──────────────────────────────────────────────
-_GPKG = os.getenv("GPKG_PATH", "greengrid_full.gpkg")
-_gdf  = gpd.read_file(_GPKG, layer="municipalities").to_crs(4326)
-_gdf  = _gdf.reset_index(drop=True)
-_GEOJSON = json.loads(_gdf.to_json())
-_DF = pd.DataFrame(_gdf.drop(columns="geometry"))
+# ── Data ──────────────────────────────────────────────────────────────────────
+_GPKG  = os.getenv("GPKG_PATH", "greengrid_full.gpkg")
+_gdf   = gpd.read_file(_GPKG, layer="municipalities").to_crs(4326).reset_index(drop=True)
+_GJ    = json.loads(_gdf.to_json())
+_DF    = pd.DataFrame(_gdf.drop(columns="geometry"))
 
 SCORE_OPTIONS = [
-    {"label": "Hybrid score",  "value": "hybrid_score"},
-    {"label": "Wind score",    "value": "wind_score"},
-    {"label": "Solar score",   "value": "solar_score"},
-    {"label": "Grid distance (km)", "value": "grid_distance_km"},
-    {"label": "Available land (ha)",  "value": "available_land_ha"},
+    {"label": "Hybrid score",        "value": "hybrid_score"},
+    {"label": "Wind score",          "value": "wind_score"},
+    {"label": "Solar score",         "value": "solar_score"},
+    {"label": "Grid distance (km)",  "value": "grid_distance_km"},
+    {"label": "Available land (ha)", "value": "available_land_ha"},
 ]
+C_COLORS = {"none": "#2ecc71", "low": "#f1c40f", "medium": "#e67e22", "high": "#e74c3c"}
 
-CONFLICT_COLORS = {"none": "#2ecc71", "low": "#f1c40f", "medium": "#e67e22", "high": "#e74c3c"}
+FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Helvetica Neue', Arial, sans-serif"
 
-# ── Helper: build choropleth ──────────────────────────────────────────────────
-def _make_map(dff: pd.DataFrame, color_col: str = "hybrid_score"):
-    reverse = color_col == "grid_distance_km"  # lower = better for grid distance
+# ── Map builder ───────────────────────────────────────────────────────────────
+def _make_map(dff, color_col="hybrid_score"):
+    reverse = color_col == "grid_distance_km"
     fig = px.choropleth_mapbox(
-        dff,
-        geojson=_GEOJSON,
-        locations=dff.index,
-        color=color_col,
+        dff, geojson=_GJ, locations=dff.index, color=color_col,
         color_continuous_scale="RdYlGn_r" if reverse else "RdYlGn",
         range_color=[0, dff[color_col].max()] if reverse else [0, 1],
-        mapbox_style="open-street-map",
-        zoom=6.4,
-        center={"lat": 52.3, "lon": 5.3},
-        opacity=0.72,
+        mapbox_style="open-street-map", zoom=6.4,
+        center={"lat": 52.3, "lon": 5.3}, opacity=0.72,
         hover_name="gemeente_naam",
-        hover_data={
-            "hybrid_score":    ":.3f",
-            "wind_score":      ":.3f",
-            "solar_score":     ":.3f",
-            "conflict_level":  True,
-            "grid_distance_km": ":.2f",
-            "available_land_ha": ":,.0f",
-        },
+        hover_data={"hybrid_score": ":.3f", "wind_score": ":.3f",
+                    "solar_score": ":.3f", "conflict_level": True,
+                    "grid_distance_km": ":.2f", "available_land_ha": ":,.0f"},
         labels={color_col: color_col.replace("_", " ").title()},
     )
     fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=530,
-        coloraxis_colorbar=dict(thickness=14, len=0.6, x=0.99),
+        margin=dict(l=0, r=0, t=0, b=0), height=None,
+        coloraxis_colorbar=dict(thickness=12, len=0.55, x=0.99, y=0.5,
+                                tickfont=dict(size=11)),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-SIDEBAR = html.Div([
+LABEL_STYLE = {
+    "fontSize": "10px", "fontWeight": "600", "letterSpacing": "0.08em",
+    "color": "#86868b", "textTransform": "uppercase", "marginBottom": "6px",
+    "display": "block", "fontFamily": FONT,
+}
+DIVIDER = html.Hr(style={"border": "none", "borderTop": "1px solid #f0f0f0", "margin": "14px 0"})
 
-    html.P("COLOUR BY", style={"fontSize": "0.7rem", "fontWeight": "700",
-                                "color": "#6c757d", "letterSpacing": "0.08em", "marginBottom": "0.3rem"}),
-    dcc.Dropdown(
-        id="map-color-col",
-        options=SCORE_OPTIONS,
-        value="hybrid_score",
-        clearable=False,
-        style={"fontSize": "0.85rem"},
-    ),
+sidebar = html.Div([
 
-    html.Hr(style={"margin": "1rem 0"}),
+    html.Span("COLOUR BY", style=LABEL_STYLE),
+    dcc.Dropdown(id="map-color-col", options=SCORE_OPTIONS, value="hybrid_score",
+                 clearable=False, style={"fontSize": "13px", "fontFamily": FONT}),
 
-    html.P("CONFLICT LEVEL", style={"fontSize": "0.7rem", "fontWeight": "700",
-                                     "color": "#6c757d", "letterSpacing": "0.08em", "marginBottom": "0.4rem"}),
+    DIVIDER,
+
+    html.Span("CONFLICT LEVEL", style=LABEL_STYLE),
     dcc.Checklist(
         id="map-conflict",
-        options=[{"label": html.Span(lv, style={"color": CONFLICT_COLORS[lv], "fontWeight": "600",
-                                                  "marginLeft": "0.3rem"}),
-                  "value": lv}
-                 for lv in ["none", "low", "medium", "high"]],
+        options=[{"label": html.Span(lv, style={"color": C_COLORS[lv], "fontWeight": "600",
+                                                  "fontSize": "13px", "marginLeft": "5px",
+                                                  "fontFamily": FONT}),
+                  "value": lv} for lv in ["none", "low", "medium", "high"]],
         value=["none", "low", "medium", "high"],
-        labelStyle={"display": "flex", "alignItems": "center", "marginBottom": "0.4rem"},
+        labelStyle={"display": "flex", "alignItems": "center", "marginBottom": "5px"},
     ),
 
-    html.Hr(style={"margin": "1rem 0"}),
+    DIVIDER,
 
-    html.P("MIN AVAILABLE LAND (HA)", style={"fontSize": "0.7rem", "fontWeight": "700",
-                                              "color": "#6c757d", "letterSpacing": "0.08em", "marginBottom": "0.4rem"}),
+    html.Span("MIN AVAILABLE LAND (HA)", style=LABEL_STYLE),
     dcc.Slider(id="map-land", min=0, max=40000, step=500, value=0,
                marks={0: "0", 10000: "10k", 20000: "20k", 40000: "40k"},
                tooltip={"placement": "bottom", "always_visible": False}),
 
-    html.Hr(style={"margin": "1rem 0"}),
+    DIVIDER,
 
-    html.P("MAX GRID DISTANCE (KM)", style={"fontSize": "0.7rem", "fontWeight": "700",
-                                             "color": "#6c757d", "letterSpacing": "0.08em", "marginBottom": "0.4rem"}),
+    html.Span("MAX GRID DISTANCE (KM)", style=LABEL_STYLE),
     dcc.Slider(id="map-grid", min=0, max=25, step=0.5, value=25,
                marks={0: "0", 5: "5", 10: "10", 25: "25+"},
                tooltip={"placement": "bottom", "always_visible": False}),
 
-    html.Hr(style={"margin": "1rem 0"}),
+    DIVIDER,
 
-    html.P("MAX POP DENSITY (KM²)", style={"fontSize": "0.7rem", "fontWeight": "700",
-                                            "color": "#6c757d", "letterSpacing": "0.08em", "marginBottom": "0.4rem"}),
+    html.Span("MAX POP DENSITY (KM²)", style=LABEL_STYLE),
     dcc.Slider(id="map-pop", min=0, max=7000, step=100, value=7000,
                marks={0: "0", 2000: "2k", 5000: "5k", 7000: "7k"},
                tooltip={"placement": "bottom", "always_visible": False}),
 
-    html.Hr(style={"margin": "1.2rem 0 0.5rem"}),
+    DIVIDER,
 
-    html.Div(id="map-count-badge", style={"textAlign": "center"}),
+    html.Div(id="map-count-badge"),
 
 ], style={
-    "width": "220px", "minWidth": "220px", "padding": "1rem",
-    "backgroundColor": "white", "borderRadius": "8px",
-    "boxShadow": "0 1px 4px rgba(0,0,0,0.1)", "height": "fit-content",
+    "width": "200px", "minWidth": "200px", "flexShrink": "0",
+    "backgroundColor": "white",
+    "borderRight": "1px solid #f0f0f0",
+    "padding": "20px 16px",
+    "overflowY": "auto",
+    "fontFamily": FONT,
 })
-
 
 # ── Chat panel ────────────────────────────────────────────────────────────────
-CHAT_PANEL = html.Div([
+chat_panel = html.Div([
     html.Div([
-        html.Span("💬 Ask the Knowledge Graph", style={
-            "fontWeight": "700", "fontSize": "0.95rem", "color": "#1a3c2e"
+        # Input row
+        html.Div([
+            html.Span("✦", style={
+                "fontSize": "14px", "color": "#1d1d1f", "marginRight": "10px",
+                "flexShrink": "0", "lineHeight": "1",
+            }),
+            dcc.Input(
+                id="chat-input", type="text", n_submit=0,
+                placeholder="Ask the knowledge graph anything…",
+                style={
+                    "flex": "1", "border": "none", "outline": "none",
+                    "fontSize": "14px", "color": "#1d1d1f",
+                    "backgroundColor": "transparent", "fontFamily": FONT,
+                    "letterSpacing": "-0.01em",
+                },
+            ),
+            html.Button("Ask →", id="chat-submit", n_clicks=0, style={
+                "flexShrink": "0", "border": "none", "outline": "none",
+                "backgroundColor": "#1d1d1f", "color": "white",
+                "padding": "7px 16px", "borderRadius": "20px",
+                "fontSize": "13px", "fontWeight": "500", "cursor": "pointer",
+                "fontFamily": FONT, "letterSpacing": "-0.01em",
+                "transition": "opacity 0.15s",
+            }),
+        ], style={
+            "display": "flex", "alignItems": "center",
+            "backgroundColor": "#f5f5f7",
+            "borderRadius": "12px",
+            "padding": "10px 14px",
+            "gap": "6px",
         }),
-        html.Span(" — natural language → Cypher → AuraDB", style={
-            "fontSize": "0.78rem", "color": "#6c757d", "marginLeft": "0.5rem"
-        }),
-    ], style={"marginBottom": "0.6rem"}),
 
-    html.Div([
-        dcc.Input(
-            id="chat-input",
-            type="text",
-            placeholder='e.g. "Top 10 wind municipalities with no Natura 2000 conflict"',
-            debounce=False,
-            style={
-                "width": "100%", "padding": "0.5rem 0.75rem",
-                "border": "1.5px solid #d0d7d2", "borderRadius": "6px",
-                "fontSize": "0.88rem", "outline": "none",
-            },
-            n_submit=0,
-        ),
-        html.Button("Ask →", id="chat-submit", n_clicks=0, style={
-            "marginLeft": "0.6rem", "padding": "0.5rem 1.1rem",
-            "backgroundColor": "#1a3c2e", "color": "white",
-            "border": "none", "borderRadius": "6px",
-            "fontWeight": "600", "cursor": "pointer", "whiteSpace": "nowrap",
-        }),
-    ], style={"display": "flex", "alignItems": "center"}),
-
-    # Loading wrapper
-    dcc.Loading(type="circle", color="#1a3c2e", children=[
-        html.Div(id="chat-output", style={"marginTop": "0.75rem"}),
-    ]),
-
+        # Results area
+        dcc.Loading(type="circle", color="#1d1d1f", children=[
+            html.Div(id="chat-output", style={"marginTop": "10px"}),
+        ]),
+    ], style={"maxWidth": "900px", "margin": "0 auto", "width": "100%"}),
 ], style={
-    "backgroundColor": "white", "borderRadius": "8px",
-    "boxShadow": "0 1px 4px rgba(0,0,0,0.1)",
-    "padding": "1rem 1.2rem", "marginTop": "0.75rem",
+    "borderTop": "1px solid #e8e8ed",
+    "backgroundColor": "white",
+    "padding": "14px 24px 16px",
+    "fontFamily": FONT,
+    "flexShrink": "0",
 })
-
 
 # ── Page layout ───────────────────────────────────────────────────────────────
 layout = html.Div([
-
-    # Top section: sidebar + map
     html.Div([
-        SIDEBAR,
+        # LEFT: Sidebar
+        sidebar,
+
+        # RIGHT: Map + Chat
         html.Div([
-            dcc.Graph(id="main-map", config={"scrollZoom": True},
-                      figure=_make_map(_DF)),
-        ], style={"flex": "1", "minWidth": "0"}),
-    ], style={"display": "flex", "gap": "0.75rem", "padding": "0.75rem"}),
+            # Map (fills remaining height)
+            dcc.Graph(
+                id="main-map",
+                figure=_make_map(_DF),
+                config={"scrollZoom": True},
+                style={"flex": "1", "minHeight": "0"},
+            ),
+            # Chat (pinned at bottom)
+            chat_panel,
+        ], style={
+            "flex": "1", "display": "flex", "flexDirection": "column",
+            "minWidth": "0", "height": "100%",
+        }),
 
-    # Bottom section: chat
-    html.Div(CHAT_PANEL, style={"padding": "0 0.75rem 0.75rem"}),
-
-])
+    ], style={
+        "display": "flex",
+        "height": "calc(100vh - 52px)",
+        "overflow": "hidden",
+    }),
+], style={"fontFamily": FONT})
 
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
-
 @callback(
-    Output("main-map",       "figure"),
+    Output("main-map",        "figure"),
     Output("map-count-badge", "children"),
     Output("filters-store",   "data"),
     Input("map-color-col", "value"),
@@ -208,25 +209,23 @@ layout = html.Div([
 def update_map(color_col, conflicts, min_land, max_grid, max_pop):
     dff = _DF[
         _DF["conflict_level"].isin(conflicts) &
-        (_DF["available_land_ha"]  >= min_land) &
-        (_DF["grid_distance_km"]   <= max_grid) &
-        (_DF["pop_density_km2"]    <= max_pop)
+        (_DF["available_land_ha"] >= min_land) &
+        (_DF["grid_distance_km"]  <= max_grid) &
+        (_DF["pop_density_km2"]   <= max_pop)
     ]
     fig = _make_map(dff, color_col)
-
     badge = html.Div([
-        html.Span(f"{len(dff)}", style={"fontSize": "1.8rem", "fontWeight": "700", "color": "#1a3c2e"}),
-        html.Span(" / 342", style={"fontSize": "0.85rem", "color": "#6c757d"}),
+        html.Span(f"{len(dff)}", style={
+            "fontSize": "28px", "fontWeight": "700", "color": "#1d1d1f",
+            "letterSpacing": "-0.03em", "fontFamily": FONT,
+        }),
+        html.Span(f" / 342", style={"fontSize": "13px", "color": "#86868b", "fontFamily": FONT}),
         html.Br(),
-        html.Span("municipalities", style={"fontSize": "0.75rem", "color": "#6c757d"}),
-    ])
-
-    store = {
-        "conflict_levels": conflicts,
-        "min_land_ha":     min_land,
-        "max_grid_km":     max_grid,
-        "max_pop_density": max_pop,
-    }
+        html.Span("municipalities", style={"fontSize": "11px", "color": "#86868b",
+                                            "fontFamily": FONT, "letterSpacing": "0.02em"}),
+    ], style={"marginTop": "8px"})
+    store = {"conflict_levels": conflicts, "min_land_ha": min_land,
+             "max_grid_km": max_grid, "max_pop_density": max_pop}
     return fig, badge, store
 
 
@@ -239,72 +238,82 @@ def update_map(color_col, conflicts, min_land, max_grid, max_pop):
 )
 def run_chat(n_clicks, n_submit, question):
     if not question or not question.strip():
-        return html.Span("Please type a question first.", style={"color": "#6c757d", "fontSize": "0.85rem"})
+        return None
 
     result = ask(question.strip())
 
-    # ── Error state ─────────────────────────────────────────────────────────
     if result["error"]:
         return html.Div([
-            html.Div("⚠️ Query failed", style={"fontWeight": "600", "color": "#c0392b", "marginBottom": "0.3rem"}),
-            html.Code(result["error"], style={"fontSize": "0.78rem", "color": "#c0392b"}),
-            _cypher_toggle(result["cypher"]),
+            html.Div([
+                html.Span("Something went wrong", style={
+                    "fontSize": "13px", "fontWeight": "500", "color": "#ff3b30", "fontFamily": FONT,
+                }),
+                html.Details([
+                    html.Summary("View error", style={"fontSize": "12px", "color": "#86868b",
+                                                       "cursor": "pointer", "fontFamily": FONT}),
+                    html.Code(result["error"], style={"fontSize": "11px", "color": "#ff3b30"}),
+                ], style={"marginTop": "4px"}),
+            ] + ([_cypher_block(result["cypher"])] if result["cypher"] else []),
+            style={"padding": "10px 14px", "backgroundColor": "#fff2f0",
+                   "borderRadius": "10px", "border": "1px solid #ffccc7"}),
         ])
 
-    # ── Empty result ─────────────────────────────────────────────────────────
     if not result["rows"]:
-        return html.Div([
-            html.Span("✓ Query ran but returned no results.", style={"color": "#6c757d", "fontSize": "0.85rem"}),
-            _cypher_toggle(result["cypher"]),
-        ])
+        return html.Div(
+            "No results found for this query.",
+            style={"fontSize": "13px", "color": "#86868b", "fontFamily": FONT,
+                   "padding": "8px 0"},
+        )
 
-    # ── Results table ────────────────────────────────────────────────────────
+    # Results table — minimal style
     table = dash_table.DataTable(
-        columns=[{"name": c, "id": c} for c in result["columns"]],
+        columns=[{"name": c.replace("_", " "), "id": c} for c in result["columns"]],
         data=[dict(zip(result["columns"], row)) for row in result["rows"]],
-        page_size=8,
-        sort_action="native",
-        style_table={"overflowX": "auto"},
-        style_header={
-            "backgroundColor": "#1a3c2e", "color": "white",
-            "fontWeight": "600", "fontSize": "0.78rem", "textTransform": "uppercase",
-            "letterSpacing": "0.05em",
-        },
-        style_cell={
-            "fontSize": "0.83rem", "padding": "0.4rem 0.6rem",
-            "border": "1px solid #e9ecef", "textAlign": "left",
-        },
-        style_data_conditional=[{"if": {"row_index": "odd"}, "backgroundColor": "#f8faf9"}],
+        page_size=6, sort_action="native",
+        style_table={"overflowX": "auto", "borderRadius": "10px",
+                     "border": "1px solid #e8e8ed"},
+        style_header={"backgroundColor": "#f5f5f7", "color": "#1d1d1f",
+                      "fontWeight": "600", "fontSize": "11px",
+                      "textTransform": "uppercase", "letterSpacing": "0.06em",
+                      "padding": "9px 12px", "border": "none",
+                      "fontFamily": FONT},
+        style_cell={"fontSize": "12px", "padding": "8px 12px",
+                    "border": "none", "borderBottom": "1px solid #f5f5f7",
+                    "fontFamily": FONT, "color": "#1d1d1f"},
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"}
+        ],
     )
 
-    retried_badge = (
-        html.Span(" (auto-retried)", style={"fontSize": "0.72rem", "color": "#e67e22", "marginLeft": "0.4rem"})
-        if result["retried"] else None
-    )
+    retried = html.Span(" · auto-retried", style={
+        "fontSize": "11px", "color": "#ff9500", "fontFamily": FONT
+    }) if result["retried"] else None
 
     return html.Div([
         html.Div([
-            html.Span(f"✓ {len(result['rows'])} row(s)", style={"fontWeight": "600", "color": "#1a3c2e", "fontSize": "0.85rem"}),
-            retried_badge,
-        ], style={"marginBottom": "0.4rem"}),
+            html.Span(f"{len(result['rows'])} result{'s' if len(result['rows']) != 1 else ''}",
+                      style={"fontSize": "12px", "color": "#86868b", "fontFamily": FONT}),
+            retried,
+        ], style={"display": "flex", "alignItems": "center", "gap": "4px",
+                  "marginBottom": "8px"}),
         table,
-        _cypher_toggle(result["cypher"]),
+        _cypher_block(result["cypher"]),
     ])
 
 
-def _cypher_toggle(cypher: str):
-    """Collapsible 'View Cypher' block shown under every result."""
+def _cypher_block(cypher):
     if not cypher:
         return html.Div()
     return html.Details([
         html.Summary("View Cypher", style={
-            "cursor": "pointer", "fontSize": "0.78rem",
-            "color": "#6c757d", "marginTop": "0.5rem",
+            "fontSize": "11px", "color": "#86868b", "cursor": "pointer",
+            "marginTop": "8px", "fontFamily": FONT, "letterSpacing": "0.01em",
         }),
         html.Pre(cypher, style={
-            "backgroundColor": "#f1f3f2", "padding": "0.6rem 0.8rem",
-            "borderRadius": "5px", "fontSize": "0.78rem",
-            "overflowX": "auto", "marginTop": "0.4rem",
-            "border": "1px solid #dde3df",
+            "backgroundColor": "#f5f5f7", "padding": "10px 14px",
+            "borderRadius": "8px", "fontSize": "11px", "lineHeight": "1.6",
+            "overflowX": "auto", "marginTop": "6px",
+            "color": "#1d1d1f", "fontFamily": "'SF Mono', 'Fira Code', monospace",
+            "border": "1px solid #e8e8ed",
         }),
     ])
