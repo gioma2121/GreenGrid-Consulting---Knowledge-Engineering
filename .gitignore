@@ -11,3 +11,5 @@ greengrid_full.gpkg
 #Pychache and IDE settings
 __pycache__/*
 .vscode/*
+
+.env
