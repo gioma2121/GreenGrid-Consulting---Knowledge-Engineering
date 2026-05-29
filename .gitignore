@@ -6,10 +6,13 @@
 
 #Data files
 data/raw/brpgewaspercelen_definitief_2025.gpkg
-greengrid_full.gpkg
+data/processed/greengrid_full.gpkg
+data/processed/greengrid_scores.gpkg
 
 #Pychache and IDE settings
 **/__pycache__/
 .vscode/*
 
 .env
+
+*scripts/*

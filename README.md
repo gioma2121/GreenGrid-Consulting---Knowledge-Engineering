@@ -111,19 +111,19 @@ Run scripts in this order:
 
 ```bash
 # 1. Compute energy scores and build the GeoPackage
-python greengrid_analysis.py
+python src/dataset/greengrid_analysis.py
 
 # 2. Add OSM power grid layer and grid_distance_km per municipality
-python fetch_grid.py
+python src/dataset/fetch_grid.py
 
 # 3. Add population density and province mapping (CBS + PDOK)
-python fetch_cbs.py
+python src/dataset/fetch_cbs.py
 
 # 4. Load the knowledge graph into Neo4j (Tier 1 — ~1000 nodes, ~8000 edges)
-python load_kg.py --gpkg greengrid_full.gpkg
+python src/dataset/load_kg.py
 
 # Optional: also load 1.29M parcel nodes (Tier 2, memory-intensive)
-python load_kg.py --gpkg greengrid_full.gpkg --parcels
+python src/dataset/load_kg.py --parcels
 ```
 
 ### Running the dashboard
@@ -161,22 +161,34 @@ Predefined Cypher queries for the five core competency questions are in `compete
 
 ```
 .
-├── app.py                    # Dash application entry point
-├── greengrid_analysis.py     # Main scoring pipeline → greengrid_full.gpkg
-├── fetch_grid.py             # OSM power grid fetch → greengrid_full.gpkg
-├── fetch_cbs.py              # CBS/PDOK population + province fetch
-├── load_kg.py                # Neo4j loader (Tier 1 + optional Tier 2)
-├── schema.cypher             # Neo4j constraints and indexes
-├── competency_queries.cypher # Validation queries for the knowledge graph
-├── frontend/
-│   └── pages/
-│       ├── home.py           # Map page
-│       ├── analytics.py      # Analytics page
-│       └── kg.py             # Knowledge graph explorer page
-├── backend/
-│   └── nl_cypher.py          # Natural language → Cypher translation
+├── requirements.txt
+├── README.md
+│
+├── src/
+│   ├── dataset/                      # data → GeoPackage → Neo4j
+│   │   ├── greengrid_analysis.py     # Main scoring pipeline
+│   │   ├── fetch_grid.py             # OSM power grid fetch
+│   │   ├── fetch_cbs.py              # CBS/PDOK population + province fetch
+│   │   └── load_kg.py                # Neo4j loader (Tier 1 + optional Tier 2)
+│   │
+│   ├── dashboard/                    # Dash web application
+│   │   ├── app.py                    # Entry point
+│   │   ├── nl_cypher.py              # Natural language → Cypher translation
+│   │   └── pages/
+│   │       ├── home.py               # Map page
+│   │       ├── analytics.py          # Analytics page
+│   │       └── kg.py                 # Knowledge graph explorer page
+│   │
+│   └── other/                        # Knowledge graph artifacts + exploratory scripts
+│       ├── schema.cypher             # Neo4j constraints and indexes
+│       ├── competency_queries.cypher # Validation queries
+│       ├── analysis.py
+│       ├── preprocessing.py
+│       └── plot_grid.py
+│
 ├── data/
-│   └── raw/                  # Input rasters and GeoPackages (not tracked in git)
-├── greengrid_full.gpkg       # Master GeoPackage (not tracked in git)
-└── requirements.txt
+│   ├── raw/                          # Input rasters and GeoPackages (not in git)
+│   └── processed/                    # greengrid_full.gpkg, greengrid_scores.gpkg (not in git)
+│
+└── figs/                             # Output maps and visualisations
 ```

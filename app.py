@@ -10,13 +10,14 @@ import dash
 from dash import html, dcc
 import dash_bootstrap_components as dbc
 
-# Make backend/ importable from anywhere in the project
-sys.path.insert(0, os.path.dirname(__file__))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "src", "dashboard"))
+os.environ.setdefault("GPKG_PATH", os.path.join(_HERE, "data", "processed", "greengrid_full.gpkg"))
 
 app = dash.Dash(
     __name__,
     use_pages=True,
-    pages_folder="frontend/pages",
+    pages_folder=os.path.join(_HERE, "src", "dashboard", "pages"),
     suppress_callback_exceptions=True,
     external_stylesheets=[dbc.themes.BOOTSTRAP],
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}],
