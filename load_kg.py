@@ -165,11 +165,11 @@ def compute_pairwise_overlaps(
 
     # Detect column names — different versions of the dataset use different names
     code_col = next(
-        (c for c in natura.columns if c.lower() in ("sitecode", "site_code", "code")),
-        natura.columns[0],
+        (c for c in natura.columns if c.lower().startswith("sitecode")),
+        next((c for c in natura.columns if c.lower() in ("site_code", "code")), natura.columns[0]),
     )
     name_col = next(
-        (c for c in natura.columns if c.lower() in ("naam", "name", "site_name")),
+        (c for c in natura.columns if c.lower() in ("naam_n2k", "naam", "name", "site_name")),
         natura.columns[1],
     )
     nat_sm = natura[[code_col, name_col, "geometry"]].rename(
@@ -353,11 +353,11 @@ def write_natura2000_nodes(session, natura: gpd.GeoDataFrame) -> None:
     log.info("Writing %d Natura2000Site nodes …", len(natura))
 
     code_col = next(
-        (c for c in natura.columns if c.lower() in ("sitecode", "site_code", "code")),
-        natura.columns[0],
+        (c for c in natura.columns if c.lower().startswith("sitecode")),
+        next((c for c in natura.columns if c.lower() in ("site_code", "code")), natura.columns[0]),
     )
     name_col = next(
-        (c for c in natura.columns if c.lower() in ("naam", "name", "site_name")),
+        (c for c in natura.columns if c.lower() in ("naam_n2k", "naam", "name", "site_name")),
         natura.columns[1],
     )
 

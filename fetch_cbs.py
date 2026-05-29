@@ -5,6 +5,7 @@ Fetches population density per municipality from CBS Statline API.
 """
 
 import os
+import requests
 import pandas as pd
 import geopandas as gpd
 
@@ -151,6 +152,73 @@ print(f"\n  Top 10 least densely populated:")
 print(muni[["gemeente_naam", "pop_density_km2", "hybrid_score"]]
       .sort_values("pop_density_km2")
       .head(10).to_string(index=False))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 4 – Fetch gemeente → provincie mapping from PDOK WFS
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n[4/4] Fetching gemeente → provincie mapping from PDOK ...")
+
+PDOK_BASE = (
+    "https://service.pdok.nl/cbs/gebiedsindelingen/2024/wfs/v1_0"
+    "?service=WFS&version=2.0.0&request=GetFeature"
+    "&typeName=gebiedsindelingen:{layer}"
+    "&outputFormat=application/json"
+    "&count=1000"
+)
+
+try:
+    # Fetch gemeente labelpoints (centroid per gemeente, small download)
+    resp_g = requests.get(PDOK_BASE.format(layer="gemeente_labelpoint"), timeout=30)
+    resp_g.raise_for_status()
+    gdf_gemeente = gpd.GeoDataFrame.from_features(
+        resp_g.json()["features"], crs="EPSG:28992"
+    )[["statnaam", "geometry"]]
+    print(f"  Fetched {len(gdf_gemeente)} gemeente labelpoints")
+
+    # Fetch province polygons
+    resp_p = requests.get(PDOK_BASE.format(layer="provincie_gegeneraliseerd"), timeout=30)
+    resp_p.raise_for_status()
+    gdf_prov = gpd.GeoDataFrame.from_features(
+        resp_p.json()["features"], crs="EPSG:28992"
+    )[["statnaam", "geometry"]].rename(columns={"statnaam": "provincie_naam"})
+    print(f"  Fetched {len(gdf_prov)} province polygons")
+
+    # Point-in-polygon join
+    joined = gpd.sjoin(gdf_gemeente, gdf_prov, predicate="within", how="left")
+    prov_map = dict(zip(joined["statnaam"], joined["provincie_naam"]))
+    print(f"  Resolved {sum(v is not None for v in prov_map.values())}/{len(prov_map)} mappings")
+
+    # PDOK uses "Bergen (NH.)" while our dataset uses "Bergen (NH)" — strip
+    # the dot before the closing parenthesis so both key forms are in the map
+    import re
+    prov_map_normalized = {
+        re.sub(r"\.\)", ")", k): v for k, v in prov_map.items()
+    }
+    prov_map.update(prov_map_normalized)
+
+    muni["provincie_naam"] = muni["gemeente_naam"].map(prov_map)
+
+    # Municipalities whose names are ambiguous in PDOK (plain name vs. "(XX.)" suffix)
+    province_fallback = {
+        "Beek":       "Limburg",
+        "Laren":      "Noord-Holland",
+        "Middelburg": "Zeeland",
+        "Stein":      "Limburg",
+        "Rijswijk":   "Zuid-Holland",
+    }
+    for gem, prov in province_fallback.items():
+        muni.loc[muni["gemeente_naam"] == gem, "provincie_naam"] = prov
+
+    unmatched = muni[muni["provincie_naam"].isna()]["gemeente_naam"].tolist()
+    if unmatched:
+        print(f"  Unmatched ({len(unmatched)}): {unmatched}")
+
+    print(f"  Matched: {muni['provincie_naam'].notna().sum()}/{len(muni)}")
+    print(f"  Provinces found: {sorted(muni['provincie_naam'].dropna().unique())}")
+
+except Exception as e:
+    print(f"  WARNING: Could not fetch province mapping: {e}")
+    print("  provincie_naam column will not be added — BELONGS_TO_PROVINCE edges won't load.")
 
 # Save
 muni.to_file(GPKG_PATH, layer="municipalities", driver="GPKG")
