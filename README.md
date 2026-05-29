@@ -163,7 +163,8 @@ Predefined Cypher queries for the five core competency questions are in `compete
 .
 ├── requirements.txt
 ├── README.md
-│
+├── app.py
+│     
 ├── src/
 │   ├── dataset/                      # data → GeoPackage → Neo4j
 │   │   ├── greengrid_analysis.py     # Main scoring pipeline
@@ -172,7 +173,6 @@ Predefined Cypher queries for the five core competency questions are in `compete
 │   │   └── load_kg.py                # Neo4j loader (Tier 1 + optional Tier 2)
 │   │
 │   ├── dashboard/                    # Dash web application
-│   │   ├── app.py                    # Entry point
 │   │   ├── nl_cypher.py              # Natural language → Cypher translation
 │   │   └── pages/
 │   │       ├── home.py               # Map page
